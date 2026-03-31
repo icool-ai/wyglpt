@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+node_modules/
+.cursor/
+.agents/
+dist/
+build/
+.next/
+*.log
+.DS_Store
+Thumbs.db

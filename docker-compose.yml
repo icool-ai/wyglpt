@@ -1,0 +1,47 @@
+version: "3.9"
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: property_mysql
+    restart: unless-stopped
+    env_file:
+      - .env.example
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "${MYSQL_PORT}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  backend:
+    build:
+      context: ./backend
+    container_name: property_backend
+    restart: unless-stopped
+    env_file:
+      - .env.example
+    environment:
+      DB_HOST: mysql
+    ports:
+      - "${BACKEND_PORT}:3001"
+    depends_on:
+      - mysql
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: property_frontend
+    restart: unless-stopped
+    env_file:
+      - .env.example
+    ports:
+      - "${FRONTEND_PORT}:3000"
+    depends_on:
+      - backend
+
+volumes:
+  mysql_data:
