@@ -127,14 +127,27 @@ export class ApprovalsService {
     }
 
     if (actionType === 'billing_create') {
-      const customerName = p.customerName != null ? String(p.customerName) : '—'
+      const type = p.type != null ? String(p.type) : '—'
+      const owner = p.owner != null ? String(p.owner) : '—'
+      const periodStart = p.periodStart != null ? String(p.periodStart) : '—'
+      const periodEnd = p.periodEnd != null ? String(p.periodEnd) : '—'
       const amount = p.amount != null ? String(p.amount) : '—'
-      return `创建账单：客户 ${customerName}，金额 ${amount}`
+      return `创建账单：${type}，业主 ${owner}，账期 ${periodStart}~${periodEnd}，金额 ${amount}`
     }
 
     if (actionType === 'billing_collect') {
       const billId = p.billId != null ? String(p.billId) : '—'
       return `收缴账单：${billId}`
+    }
+
+    if (actionType === 'billing_batch_create') {
+      const rows = Array.isArray(p.rows) ? (p.rows as any[]) : []
+      const count = rows.length
+      const totalAmount = rows.reduce<number>((sum, r) => {
+        const amount = r && typeof r === 'object' && 'amount' in r ? Number((r as any).amount ?? 0) : 0
+        return sum + (Number.isNaN(amount) ? 0 : amount)
+      }, 0)
+      return `批量创建账单：${count} 条，总金额 ${totalAmount}`
     }
 
     if (actionType === 'data_edit') {

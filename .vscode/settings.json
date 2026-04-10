@@ -1,0 +1,14 @@
+{
+  "terminal.integrated.profiles.windows": {
+    "PowerShell (Node 18.19.1)": {
+      "source": "PowerShell",
+      "icon": "terminal-powershell",
+      "args": [
+        "-NoExit",
+        "-Command",
+        "if (Get-Command fnm -ErrorAction SilentlyContinue) { fnm use } elseif (Get-Command nvm -ErrorAction SilentlyContinue) { nvm use 18.19.1 }"
+      ]
+    }
+  },
+  "terminal.integrated.defaultProfile.windows": "PowerShell (Node 18.19.1)"
+}

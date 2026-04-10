@@ -8,7 +8,8 @@ import { OwnersService } from "./owners.service";
 @Module({
   imports: [AuthModule, TypeOrmModule.forFeature([OwnerHouseholdEntity])],
   providers: [OwnersService],
-  controllers: [OwnersController]
+  controllers: [OwnersController],
+  exports: [OwnersService]
 })
 export class OwnersModule {}
 

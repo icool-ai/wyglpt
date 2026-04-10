@@ -25,6 +25,7 @@ function actionTypeLabel(t: string): string {
     ticket_close: '工单关闭',
     billing_create: '账单创建',
     billing_collect: '账单收缴',
+    billing_batch_create: '账单批量创建',
     data_edit: '数据修改',
   }
   return m[t] ?? t
@@ -52,7 +53,7 @@ function payloadSummary(actionType: string, payload: Record<string, unknown> | u
   if (actionType === 'ticket_close') {
     return p.ticketId != null ? `关闭工单 ${String(p.ticketId)}` : '—'
   }
-  if (actionType === 'billing_create' || actionType === 'billing_collect') {
+  if (actionType === 'billing_create' || actionType === 'billing_collect' || actionType === 'billing_batch_create') {
     const keys = Object.keys(p)
     if (!keys.length) return '—'
     try {
@@ -324,6 +325,7 @@ export default function ApprovalsPage() {
                 { value: 'ticket_close', label: actionTypeLabel('ticket_close') },
                 { value: 'billing_create', label: actionTypeLabel('billing_create') },
                 { value: 'billing_collect', label: actionTypeLabel('billing_collect') },
+                { value: 'billing_batch_create', label: actionTypeLabel('billing_batch_create') },
                 { value: 'data_edit', label: actionTypeLabel('data_edit') },
               ]}
             />

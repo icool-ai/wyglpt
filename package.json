@@ -1,5 +1,18 @@
 {
+  "name": "wyglpt",
+  "private": true,
+  "engines": {
+    "node": "18.19.1"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n backend,frontend -c blue,magenta \"npm run start:dev --prefix backend\" \"npm run dev --prefix frontend\"",
+    "dev:backend": "npm run start:dev --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend"
+  },
   "dependencies": {
     "@ant-design/icons": "^6.1.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
   }
 }

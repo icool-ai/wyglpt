@@ -16,7 +16,7 @@ const dbType = process.env.DB_TYPE || "mysql";
   imports: [
     TypeOrmModule.forRoot({
       type: dbType,
-      host: dbType === "mysql" ? process.env.DB_HOST || "localhost" : undefined,
+      host: dbType === "mysql" ? process.env.DB_HOST || "127.0.0.1" : undefined,
       port: dbType === "mysql" ? Number(process.env.MYSQL_PORT || 3306) : undefined,
       username: dbType === "mysql" ? process.env.MYSQL_USER || "property" : undefined,
       password: dbType === "mysql" ? process.env.MYSQL_PASSWORD || "property123" : undefined,

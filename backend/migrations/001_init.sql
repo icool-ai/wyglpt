@@ -29,7 +29,10 @@ CREATE TABLE fee_items (
 
 CREATE TABLE bills (
   id VARCHAR(64) PRIMARY KEY,
+ bill_type VARCHAR(32),
   customer_name VARCHAR(128) NOT NULL,
+ billing_period VARCHAR(32),
+ billing_period_end VARCHAR(32),
   amount DECIMAL(12,2) NOT NULL,
   status VARCHAR(32) NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP

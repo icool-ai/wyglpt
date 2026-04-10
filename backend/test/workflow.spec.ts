@@ -14,7 +14,8 @@ describe("MVP workflow", () => {
         return row;
       },
       find: async () => approvalsStorage,
-      findOne: async ({ where }: any) => approvalsStorage.find((x) => x.id === where.id) ?? null
+      findOne: async ({ where }: any) =>
+        approvalsStorage.find((x) => x.id === where.id) ?? null,
     } as any;
 
     const auditRepo = { save: async (_row: any) => _row } as any;
@@ -27,7 +28,8 @@ describe("MVP workflow", () => {
         return row;
       },
       find: async () => ticketsStorage,
-      findOne: async ({ where }: any) => ticketsStorage.find((x) => x.id === where.id) ?? null
+      findOne: async ({ where }: any) =>
+        ticketsStorage.find((x) => x.id === where.id) ?? null,
     } as any;
 
     const usersRepo = { findOne: async () => null } as any;
@@ -35,24 +37,35 @@ describe("MVP workflow", () => {
     const billsRepo = {
       save: async (row: any) => row,
       find: async () => [],
-      findOne: async () => null
+      findOne: async () => null,
     } as any;
 
     const approvals = new ApprovalsService(approvalsRepo);
     const audit = new AuditService(auditRepo);
     const notifications = new NotificationsService(notificationsRepo);
-    const tickets = new TicketsService(ticketsRepo, usersRepo, approvals, audit, notifications);
+    const tickets = new TicketsService(
+      ticketsRepo,
+      usersRepo,
+      approvals,
+      audit,
+      notifications,
+    );
     const billing = new BillingService(billsRepo, approvals, audit);
 
     const llmStub = { chatCompletion: async () => "{}" } as any;
-    const ai = new AiService(approvals, tickets, billing, audit, llmStub);
+    const owners = {} as any;
+    const dashboard = {} as any;
+    const ai = new AiService(approvals, tickets, billing, owners, dashboard, audit, llmStub);
 
-    const t = await tickets.create({ title: "漏水", description: "卫生间漏水" });
+    const t = await tickets.create({
+      title: "漏水",
+      description: "卫生间漏水",
+    });
     const candidate = {
       actionType: "ticket_assign" as const,
       reason: "测试：工单分派建议",
       payload: { ticketId: t.id, assignee: "机电班组A" },
-      requiresApproval: true
+      requiresApproval: true,
     };
     const request = await ai.requestExecution(candidate);
     expect(request.status).toBe("pending");
@@ -66,7 +79,8 @@ describe("MVP workflow", () => {
         return row;
       },
       find: async () => approvalsStorage,
-      findOne: async ({ where }: any) => approvalsStorage.find((x) => x.id === where.id) ?? null
+      findOne: async ({ where }: any) =>
+        approvalsStorage.find((x) => x.id === where.id) ?? null,
     } as any;
 
     const auditRepo = { save: async (_row: any) => _row } as any;
@@ -75,7 +89,7 @@ describe("MVP workflow", () => {
     const ticketsRepo = {
       save: async (row: any) => row,
       find: async () => [],
-      findOne: async () => null
+      findOne: async () => null,
     } as any;
 
     const usersRepo = { findOne: async () => null } as any;
@@ -87,21 +101,115 @@ describe("MVP workflow", () => {
         return row;
       },
       find: async () => billsStorage,
-      findOne: async ({ where }: any) => billsStorage.find((x) => x.id === where.id) ?? null
+      findOne: async ({ where }: any) =>
+        billsStorage.find((x) => x.id === where.id) ?? null,
     } as any;
 
     const approvals = new ApprovalsService(approvalsRepo);
     const audit = new AuditService(auditRepo);
     const notifications = new NotificationsService(notificationsRepo);
-    const tickets = new TicketsService(ticketsRepo, usersRepo, approvals, audit, notifications);
+    const tickets = new TicketsService(
+      ticketsRepo,
+      usersRepo,
+      approvals,
+      audit,
+      notifications,
+    );
     const billing = new BillingService(billsRepo, approvals, audit);
 
     const llmStub = { chatCompletion: async () => "{}" } as any;
-    const ai = new AiService(approvals, tickets, billing, audit, llmStub);
+    const owners = {} as any;
+    const dashboard = {} as any;
+    const ai = new AiService(approvals, tickets, billing, owners, dashboard, audit, llmStub);
 
-    const request = await billing.requestCreate({ customerName: "A座101", amount: 1280 });
+    const request = await billing.requestCreate({
+      type: "物业费",
+      owner: "A座101",
+      periodStart: "2026-03-01",
+      periodEnd: "2026-03-31",
+      amount: 1280,
+    });
     await approvals.decide(request.id, "approved");
     const result = (await ai.executeApproved(request.id)) as { status: string };
     expect(result.status).toBe("issued");
+  });
+
+  it("should execute approved billing batch create", async () => {
+    const approvalsStorage: any[] = [];
+    const approvalsRepo = {
+      save: async (row: any) => {
+        approvalsStorage.unshift(row);
+        return row;
+      },
+      find: async () => approvalsStorage,
+      findOne: async ({ where }: any) =>
+        approvalsStorage.find((x) => x.id === where.id) ?? null,
+    } as any;
+
+    const auditRepo = { save: async (_row: any) => _row } as any;
+    const notificationsRepo = { save: async (_row: any) => _row } as any;
+
+    const ticketsRepo = {
+      save: async (row: any) => row,
+      find: async () => [],
+      findOne: async () => null,
+    } as any;
+
+    const usersRepo = { findOne: async () => null } as any;
+
+    const billsStorage: any[] = [];
+    const billsRepo = {
+      save: async (row: any) => {
+        billsStorage.unshift(row);
+        return row;
+      },
+      find: async () => billsStorage,
+      findOne: async ({ where }: any) =>
+        billsStorage.find((x) => x.id === where.id) ?? null,
+    } as any;
+
+    const approvals = new ApprovalsService(approvalsRepo);
+    const audit = new AuditService(auditRepo);
+    const notifications = new NotificationsService(notificationsRepo);
+    const tickets = new TicketsService(
+      ticketsRepo,
+      usersRepo,
+      approvals,
+      audit,
+      notifications,
+    );
+    const billing = new BillingService(billsRepo, approvals, audit);
+
+    const llmStub = { chatCompletion: async () => "{}" } as any;
+    const owners = {} as any;
+    const dashboard = {} as any;
+    const ai = new AiService(approvals, tickets, billing, owners, dashboard, audit, llmStub);
+
+    const batch = await billing.requestBatchCreate([
+      {
+        id: "bill_test_1",
+        type: "物业费",
+        owner: "A座101",
+        periodStart: "2026-03-01",
+        periodEnd: "2026-03-31",
+        amount: 1280,
+        status: "issued",
+      },
+      {
+        id: "bill_test_2",
+        type: "停车费",
+        owner: "B座102",
+        periodStart: "2026-03-01",
+        periodEnd: "2026-03-31",
+        amount: 300,
+        status: "issued",
+      },
+    ]);
+
+    await approvals.decide(batch.id, "approved");
+
+    const result = (await ai.executeApproved(batch.id)) as { created: number };
+    expect(result.created).toBe(2);
+    expect(billsStorage.length).toBe(2);
   });
 });

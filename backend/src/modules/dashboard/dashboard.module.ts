@@ -7,6 +7,7 @@ import { BillingModule } from "../billing/billing.module";
 @Module({
   imports: [TicketsModule, BillingModule],
   controllers: [DashboardController],
-  providers: [DashboardService]
+  providers: [DashboardService],
+  exports: [DashboardService]
 })
 export class DashboardModule {}

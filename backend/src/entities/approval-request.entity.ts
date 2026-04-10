@@ -5,6 +5,7 @@ export type ApprovalActionType =
   | 'ticket_close'
   | 'billing_create'
   | 'billing_collect'
+  | 'billing_batch_create'
   | 'data_edit'
 
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected'

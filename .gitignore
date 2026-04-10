@@ -8,5 +8,6 @@ dist/
 build/
 .next/
 *.log
+*.sqlite
 .DS_Store
 Thumbs.db
