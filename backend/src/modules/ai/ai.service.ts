@@ -307,6 +307,10 @@ export class AiService {
     };
 
     const asStr = (v: unknown) => (typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined);
+    const asNumber = (v: unknown) => {
+      const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+      return Number.isFinite(n) ? n : undefined;
+    };
 
     const normalizeDate = (v: unknown) => {
       const s = asStr(v);
@@ -432,7 +436,7 @@ export class AiService {
       "query根据intent决定：",
       "billing：id,type,owner,periodStart,periodEnd,amountMin,amountMax,pay。",
       "tickets：q,status。",
-      "owners：q。",
+      "owners：q 必填为检索关键词（房号片段、业主姓名、电话片段、标签名如出租/自住等）；从用户话里抽取最具体片段，仅当用户完全泛问“有哪些业主”且无任何房号/姓名/标签/号码信息时才输出空字符串。",
       "approvals：q,status,actionType。",
       "dashboard_*：query可省略。",
       "不要输出多余字段。",
@@ -490,18 +494,41 @@ export class AiService {
     }
 
     if (intent === "billing") {
-      const result = await this.billing.search({
-        id: asStr(query?.id),
-        type: asStr(query?.type),
-        owner: asStr(query?.owner),
-        periodStart: normalizeDate(query?.periodStart),
-        periodEnd: normalizeDate(query?.periodEnd),
-        amountMin: typeof query?.amountMin === "number" ? query.amountMin : undefined,
-        amountMax: typeof query?.amountMax === "number" ? query.amountMax : undefined,
-        pay: normalizePay(query?.pay),
+      const idKeyword = this.normalizeLooseSearchKeyword(query?.id, "billing");
+      const typeKeyword = this.normalizeLooseSearchKeyword(query?.type, "billing");
+      const ownerKeyword = this.normalizeLooseSearchKeyword(query?.owner, "billing");
+      const pay = normalizePay(query?.pay);
+      const periodStart = normalizeDate(query?.periodStart);
+      const periodEnd = normalizeDate(query?.periodEnd);
+      const amountMin = asNumber(query?.amountMin);
+      const amountMax = asNumber(query?.amountMax);
+
+      const firstQuery: ListBillsQueryDto = {
+        id: idKeyword,
+        type: typeKeyword,
+        owner: ownerKeyword,
+        periodStart,
+        periodEnd,
+        amountMin,
+        amountMax,
+        pay,
         page,
         pageSize,
-      } as ListBillsQueryDto);
+      };
+
+      let result = await this.billing.search(firstQuery);
+      const hasTextFilter = Boolean(idKeyword || typeKeyword || ownerKeyword);
+      const hasStrongFilter = Boolean(pay || periodStart || periodEnd || amountMin != null || amountMax != null);
+      let relaxedByKeyword = false;
+      if (result.total === 0 && hasTextFilter && !hasStrongFilter) {
+        result = await this.billing.search({
+          ...firstQuery,
+          id: undefined,
+          type: undefined,
+          owner: undefined,
+        });
+        relaxedByKeyword = result.total > 0;
+      }
 
       const payCounts = result.items.reduce<Record<string, number>>((acc, x) => {
         const k = x.pay || "未知";
@@ -530,6 +557,7 @@ export class AiService {
         `账单查询完成：共 ${result.total} 条，当前第 ${result.page} 页（展示 ${result.items.length} 条）。` +
         (topPay.length ? ` 主要状态：${topPay.join("、")}。` : "") +
         (topTypes.length ? ` 主要类型：${topTypes.join("、")}。` : "") +
+        (relaxedByKeyword ? " 已自动忽略泛化关键词，返回更广范围结果。" : "") +
         ` 本页金额合计 ${amountSum.toFixed(2)} 元。`;
 
       const analysis = {
@@ -539,6 +567,17 @@ export class AiService {
         amountMaxOnPage,
         payCounts,
         typeCounts,
+        normalizedQuery: {
+          id: idKeyword,
+          type: typeKeyword,
+          owner: ownerKeyword,
+          periodStart,
+          periodEnd,
+          amountMin,
+          amountMax,
+          pay,
+          relaxedByKeyword,
+        },
       };
 
       return {
@@ -559,8 +598,9 @@ export class AiService {
 
     if (intent === "tickets") {
       const all = await this.tickets.list();
-      const q = asStr(query?.q);
+      const q = this.normalizeLooseSearchKeyword(query?.q, "tickets");
       const status = normalizeTicketStatus(query?.status);
+      let relaxedByKeyword = false;
 
       let filtered = all;
       if (q) {
@@ -573,6 +613,10 @@ export class AiService {
         });
       }
       if (status) filtered = filtered.filter((t) => t.status === status);
+      if (filtered.length === 0 && q) {
+        filtered = status ? all.filter((t) => t.status === status) : all;
+        relaxedByKeyword = filtered.length > 0;
+      }
 
       const total = filtered.length;
       const start = (page - 1) * pageSize;
@@ -590,11 +634,17 @@ export class AiService {
 
       const baseAnswer =
         `工单查询完成：共 ${total} 条，当前第 ${page} 页（展示 ${items.length} 条）。` +
+        (relaxedByKeyword ? " 已自动忽略泛化关键词，返回更广范围结果。" : "") +
         (topStatus.length ? ` 主要状态：${topStatus.join("、")}。` : "");
 
       const analysis = {
         totalOnFiltered: total,
         statusCounts,
+        normalizedQuery: {
+          q,
+          status,
+          relaxedByKeyword,
+        },
       };
 
       return {
@@ -614,7 +664,16 @@ export class AiService {
     }
 
     if (intent === "owners") {
-      const result: OwnerListPageResult = await this.owners.list({ q: asStr(query?.q), page, pageSize } as any);
+      const qFromModel = asStr(query?.q);
+      const normalizedModelQ = this.normalizeLooseSearchKeyword(qFromModel, "owners");
+      const qFallback = normalizedModelQ ? undefined : this.inferOwnersKeywordFromQuestion(input.question);
+      const ownerSearchQ = this.normalizeLooseSearchKeyword(normalizedModelQ ?? qFallback, "owners");
+      let relaxedByKeyword = false;
+      let result: OwnerListPageResult = await this.owners.list({ q: ownerSearchQ, page, pageSize } as any);
+      if (result.total === 0 && ownerSearchQ) {
+        result = await this.owners.list({ page, pageSize } as any);
+        relaxedByKeyword = result.total > 0;
+      }
       const tagCounts = result.items.reduce<Record<string, number>>((acc, x) => {
         for (const t of x.tags ?? []) {
           const k = t || "未知";
@@ -629,6 +688,7 @@ export class AiService {
         .map(([k, v]) => `${k}(${v})`);
       const baseAnswer =
         `业主查询完成：共 ${result.total} 条，当前第 ${result.page} 页（展示 ${result.items.length} 条）。` +
+        (relaxedByKeyword ? " 已自动忽略泛化关键词，返回更广范围结果。" : "") +
         (topTags.length ? ` 主要标签：${topTags.join("、")}。` : "") +
         ` 本页成员数合计 ${memberCountSum} 人。`;
 
@@ -636,6 +696,10 @@ export class AiService {
         totalOnPage: result.items.length,
         memberCountSumOnPage: memberCountSum,
         tagCounts,
+        normalizedQuery: {
+          q: ownerSearchQ,
+          relaxedByKeyword,
+        },
       };
 
       return {
@@ -655,11 +719,69 @@ export class AiService {
     }
 
     if (intent === "approvals") {
+      const approvalQ = this.normalizeLooseSearchKeyword(query?.q, "approvals");
       const all = await this.approvals.list({
-        q: asStr(query?.q),
+        q: approvalQ,
         status: normalizeApprovalStatus(query?.status),
         actionType: normalizeApprovalActionType(query?.actionType),
       } as any);
+      if (all.length === 0 && approvalQ) {
+        const relaxed = await this.approvals.list({
+          status: normalizeApprovalStatus(query?.status),
+          actionType: normalizeApprovalActionType(query?.actionType),
+        } as any);
+        if (relaxed.length > 0) {
+          const total = relaxed.length;
+          const start = (page - 1) * pageSize;
+          const items = relaxed.slice(start, start + pageSize);
+
+          const statusCounts = relaxed.reduce<Record<string, number>>((acc, x) => {
+            const k = x.status || "未知";
+            acc[k] = (acc[k] ?? 0) + 1;
+            return acc;
+          }, {});
+          const actionTypeCounts = relaxed.reduce<Record<string, number>>((acc, x) => {
+            const k = x.actionType || "未知";
+            acc[k] = (acc[k] ?? 0) + 1;
+            return acc;
+          }, {});
+          const topStatus = Object.entries(statusCounts)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 2)
+            .map(([k, v]) => `${k}(${v})`);
+          const topActionTypes = Object.entries(actionTypeCounts)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3)
+            .map(([k, v]) => `${k}(${v})`);
+
+          const baseAnswer =
+            `审批记录查询：共 ${total} 条，当前第 ${page} 页（展示 ${items.length} 条）。` +
+            " 已自动忽略泛化关键词，返回更广范围结果。" +
+            (topStatus.length ? ` 主要状态：${topStatus.join("、")}。` : "") +
+            (topActionTypes.length ? ` 主要类型：${topActionTypes.join("、")}。` : "");
+
+          const analysis = {
+            totalOnFiltered: total,
+            statusCounts,
+            actionTypeCounts,
+          };
+
+          return {
+            kind: "ok" as const,
+            payload: {
+              intent,
+              analysis,
+              baseAnswer,
+              items,
+              total,
+              page,
+              pageSize,
+              llmParseOk,
+            },
+            reasoningParts,
+          };
+        }
+      }
 
       const total = all.length;
       const start = (page - 1) * pageSize;
@@ -788,15 +910,17 @@ export class AiService {
     pageSize?: number;
     thinking?: boolean;
     showReasoning?: boolean;
+    history?: Array<{ role: "user" | "assistant"; content: string }>;
   }): Promise<any> {
     const useReasoner = Boolean(input.thinking);
     const showReasoning = Boolean(input.showReasoning);
-    const built = await this.buildAskData(input);
+    const contextualQuestion = this.buildContextualQuestion(input.question, input.history);
+    const built = await this.buildAskData({ ...input, question: contextualQuestion });
     if (built.kind === "terminal") return built.data;
 
     const p = built.payload;
     const narrative = await this.runNarrativeJson(
-      input.question,
+      contextualQuestion,
       p.analysis,
       p.baseAnswer,
       p.llmParseOk,
@@ -832,7 +956,14 @@ export class AiService {
    */
   async streamAskQuestion(
     res: Response,
-    input: { question: string; page?: number; pageSize?: number; thinking?: boolean; showReasoning?: boolean }
+    input: {
+      question: string;
+      page?: number;
+      pageSize?: number;
+      thinking?: boolean;
+      showReasoning?: boolean;
+      history?: Array<{ role: "user" | "assistant"; content: string }>;
+    }
   ): Promise<void> {
     res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -841,9 +972,10 @@ export class AiService {
 
     const useReasoner = Boolean(input.thinking);
     const showReasoning = Boolean(input.showReasoning);
+    const contextualQuestion = this.buildContextualQuestion(input.question, input.history);
 
     try {
-      const built = await this.buildAskData(input);
+      const built = await this.buildAskData({ ...input, question: contextualQuestion });
       if (built.kind === "terminal") {
         res.write(`data: ${JSON.stringify({ event: "meta", terminal: true, ...built.data })}\n\n`);
         res.write("data: [DONE]\n\n");
@@ -884,7 +1016,7 @@ export class AiService {
         "请用自然、简洁的中文写一段给用户看的说明（约 2～6 句），只输出正文，不要使用 Markdown 标题、不要输出 JSON。",
       ].join("");
 
-      const streamUser = `用户问题：${input.question}\n统计摘要：${p.baseAnswer}\n结构化分析 JSON：${JSON.stringify(p.analysis)}`;
+      const streamUser = `用户问题：${contextualQuestion}\n统计摘要：${p.baseAnswer}\n结构化分析 JSON：${JSON.stringify(p.analysis)}`;
 
       for await (const chunk of this.llm.streamChatCompletion({
         system: streamSystem,
@@ -900,7 +1032,7 @@ export class AiService {
             "你是物业运维助手。根据结构化分析，输出严格 JSON，不要其他文字。",
             'JSON 格式：{"insights":["最多3条"],"recommendations":["最多3条"]}，中文。',
           ].join(""),
-          user: `用户问题：${input.question}\n结构化分析：${JSON.stringify(p.analysis)}`,
+          user: `用户问题：${contextualQuestion}\n结构化分析：${JSON.stringify(p.analysis)}`,
           temperature: 0.2,
         });
         const ex = this.safeParseJson(extraJson) as { insights?: unknown[]; recommendations?: unknown[] };
@@ -966,6 +1098,155 @@ export class AiService {
       out[key] = typeof value === "string" && value.length > 2 ? `${value.slice(0, 1)}***` : value;
     }
     return out;
+  }
+
+  /**
+   * LLM 未返回 owners.query.q 时，从当前问题中抽取检索词，避免无 q 时反复命中同一页全量列表。
+   */
+  private inferOwnersKeywordFromQuestion(raw: string): string | undefined {
+    let src = String(raw ?? "").trim();
+    const marker = "【当前问题】";
+    const idx = src.lastIndexOf(marker);
+    if (idx >= 0) src = src.slice(idx + marker.length).trim();
+    const q0 = src.replace(/\s+/g, " ");
+    if (!q0) return undefined;
+
+    const compact = q0.replace(/\s/g, "");
+    const phone = compact.match(/1[3-9]\d{9}/);
+    if (phone) return phone[0];
+
+    const room = compact.match(/\d{1,4}[栋\-#－]\d{2,4}[a-zA-Z]?/);
+    if (room) return room[0];
+
+    const noise: string[] = [
+      "麻烦帮我",
+      "请帮我",
+      "帮我",
+      "请问",
+      "想知道",
+      "了解一下",
+      "显示出来",
+      "显示",
+      "列出",
+      "搜索",
+      "查一下",
+      "看一下",
+      "搜一下",
+      "找一下",
+      "查查",
+      "查询",
+      "查查看",
+      "查",
+      "看看",
+      "有哪些",
+      "多少个",
+      "多少人",
+      "几个",
+      "都是谁",
+      "业主信息",
+      "业主资料",
+      "业主档案",
+      "业主列表",
+      "业主成员",
+      "业主住户",
+      "业主",
+      "房号",
+      "房间",
+      "住户",
+      "家庭成员",
+      "成员",
+      "联系电话",
+      "联系方式",
+      "手机号",
+      "电话",
+      "手机",
+      "资料",
+      "信息",
+      "档案",
+      "列表",
+      "记录",
+      "相关",
+      "关于",
+      "有没有",
+      "是不是",
+      "谁的",
+      "平台",
+      "系统",
+      "里面",
+      "当中",
+      "的",
+      "吗",
+      "呢",
+      "？",
+      "?",
+      "！",
+      "!",
+      "。",
+      "，",
+      ","
+    ];
+    let rest = q0;
+    for (const w of [...noise].sort((a, b) => b.length - a.length)) {
+      rest = rest.split(w).join(" ");
+    }
+    rest = rest.replace(/\s+/g, " ").trim();
+    if (!rest) return undefined;
+    return rest.length > 64 ? rest.slice(0, 64) : rest;
+  }
+
+  /**
+   * 规避“业主成员信息/工单信息/审批记录/账单列表”这类泛化词被当成硬过滤条件，
+   * 导致本应有数据却查空。
+   */
+  private normalizeLooseSearchKeyword(raw: unknown, domain: "owners" | "tickets" | "approvals" | "billing"): string | undefined {
+    const src = typeof raw === "string" ? raw.trim() : "";
+    if (!src) return undefined;
+    const compact = src.replace(/\s+/g, "");
+    const phone = compact.match(/1[3-9]\d{9}/);
+    if (phone) return phone[0];
+    const room = compact.match(/\d{1,4}[栋\-#－]\d{2,4}[a-zA-Z]?/);
+    if (room) return room[0];
+
+    const genericByDomain: Record<"owners" | "tickets" | "approvals" | "billing", string[]> = {
+      owners: ["业主", "成员", "住户", "家庭成员", "信息", "资料", "档案", "列表", "查询", "查一下", "看看", "有哪些"],
+      tickets: ["工单", "报修", "记录", "列表", "信息", "查询", "查一下", "看看", "有哪些"],
+      approvals: ["审批", "审核", "记录", "列表", "信息", "查询", "查一下", "看看", "有哪些"],
+      billing: ["账单", "账务", "费用", "记录", "列表", "信息", "查询", "查一下", "看看", "有哪些"],
+    };
+    const commonNoise = ["请", "帮我", "麻烦", "一下", "的", "吗", "呢", "？", "?", "！", "!", "。", "，", ","];
+    let next = src;
+    for (const w of [...genericByDomain[domain], ...commonNoise].sort((a, b) => b.length - a.length)) {
+      next = next.split(w).join(" ");
+    }
+    next = next.replace(/\s+/g, " ").trim();
+    if (!next) return undefined;
+    return next.length > 64 ? next.slice(0, 64) : next;
+  }
+
+  private buildContextualQuestion(
+    question: string,
+    history?: Array<{ role: "user" | "assistant"; content: string }>
+  ): string {
+    const normalizedQuestion = String(question || "").trim();
+    if (!Array.isArray(history) || history.length === 0) return normalizedQuestion;
+
+    const normalizedHistory = history
+      .filter((x) => (x?.role === "user" || x?.role === "assistant") && typeof x?.content === "string" && x.content.trim())
+      .slice(-40);
+
+    if (normalizedHistory.length === 0) return normalizedQuestion;
+
+    const recentHistory = normalizedHistory.slice(-10).map((x) => `${x.role === "user" ? "用户" : "助手"}：${x.content.trim()}`);
+    const oldHistory = normalizedHistory.slice(0, -10);
+    const oldSummary = oldHistory.length
+      ? oldHistory
+          .slice(-20)
+          .map((x) => `${x.role === "user" ? "用户" : "助手"}：${x.content.replace(/\s+/g, " ").slice(0, 80)}`)
+          .join("；")
+      : "";
+
+    const summaryLine = oldSummary ? `【较早历史摘要】\n${oldSummary.slice(0, 1200)}\n\n` : "";
+    return `${summaryLine}【最近对话】\n${recentHistory.join("\n")}\n\n【当前问题】\n${normalizedQuestion}`;
   }
 
   private safeParseJson(content: string): any {

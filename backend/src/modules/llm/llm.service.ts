@@ -114,6 +114,7 @@ export class LlmService {
   async *streamChatCompletion(input: {
     system: string;
     user: string;
+    history?: Array<{ role: "user" | "assistant"; content: string }>;
     model?: string;
     temperature?: number;
   }): AsyncGenerator<{ kind: "reasoning" | "content"; text: string }> {
@@ -121,6 +122,13 @@ export class LlmService {
     const endpoint = `${baseUrl}/chat/completions`;
     const model = this.resolveModel(input.model);
     const temperature = Number(process.env.LLM_TEMPERATURE || input.temperature || 0.2);
+
+    const historyMessages = Array.isArray(input.history)
+      ? input.history
+          .filter((x) => (x?.role === "user" || x?.role === "assistant") && typeof x?.content === "string" && x.content.trim())
+          .slice(-12)
+          .map((x) => ({ role: x.role, content: x.content.trim() }))
+      : [];
 
     const res = await fetch(endpoint, {
       method: "POST",
@@ -132,9 +140,49 @@ export class LlmService {
         model,
         messages: [
           { role: "system", content: input.system },
+          ...historyMessages,
           { role: "user", content: input.user }
         ],
         temperature,
+        stream: true
+      })
+    });
+
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`LLM stream failed: ${res.status} ${text}`);
+    }
+
+    yield* this.parseOpenAiSseStream(res.body);
+  }
+
+  /**
+   * 任意 messages 的 OpenAI 兼容流式补全（用于 DeepSeek reasoner 等，需自行传入完整 messages）。
+   * 解析 delta 中的 reasoning_content 与 content。
+   */
+  async *streamChatCompletionsWithMessages(input: { model: string; messages: unknown[] }): AsyncGenerator<{
+    kind: "reasoning" | "content";
+    text: string;
+  }> {
+    const apiKey = (process.env.DEEPSEEK_API_KEY || process.env.LLM_API_KEY || "").trim();
+    if (!apiKey) throw new Error("DEEPSEEK_API_KEY or LLM_API_KEY is not set");
+
+    const baseUrl = (
+      process.env.DEEPSEEK_BASE_URL ||
+      process.env.LLM_BASE_URL ||
+      "https://api.deepseek.com/v1"
+    ).replace(/\/+$/, "");
+
+    const endpoint = `${baseUrl}/chat/completions`;
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: input.model,
+        messages: input.messages,
         stream: true
       })
     });

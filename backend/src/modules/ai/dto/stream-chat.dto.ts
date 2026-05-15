@@ -1,5 +1,15 @@
-import { IsBoolean, IsNotEmpty, IsOptional, IsString, MaxLength } from "class-validator";
 import { Type } from "class-transformer";
+import { IsArray, IsBoolean, IsIn, IsNotEmpty, IsOptional, IsString, MaxLength, ValidateNested } from "class-validator";
+
+class ChatHistoryItemDto {
+  @IsIn(["user", "assistant"])
+  role!: "user" | "assistant";
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(4096)
+  content!: string;
+}
 
 export class StreamChatDto {
   @IsString()
@@ -12,4 +22,11 @@ export class StreamChatDto {
   @Type(() => Boolean)
   @IsBoolean()
   thinking?: boolean;
+
+  /** 近几轮上下文（按时间正序），不含当前 question */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ChatHistoryItemDto)
+  history?: ChatHistoryItemDto[];
 }

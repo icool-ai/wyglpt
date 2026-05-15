@@ -1,19 +1,26 @@
 import { Injectable } from "@nestjs/common";
-import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
+import {
+  AIMessage,
+  AIMessageChunk,
+  BaseMessage,
+  HumanMessage,
+  SystemMessage,
+  ToolMessage
+} from "@langchain/core/messages";
 import { tool } from "@langchain/core/tools";
 import { ChatOpenAI } from "@langchain/openai";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { BillingService } from "../billing/billing.service";
 import { TicketsService } from "../tickets/tickets.service";
 import { ApprovalsService } from "../approvals/approvals.service";
 import { OwnersService } from "../owners/owners.service";
 import { DashboardService } from "../dashboard/dashboard.service";
 import type { ListBillsQueryDto } from "../billing/dto/list-bills-query.dto";
+import { LlmService } from "../llm/llm.service";
 
 type StreamChunk = { kind: "reasoning" | "content"; text: string };
 type StreamMeta = { event: "meta"; model: string; maxToolRounds: number };
-type StreamTool = { event: "tool"; name: string; args: Record<string, unknown>; ok: boolean; note?: string };
-export type DeepAgentsStreamEvent = StreamChunk | StreamMeta | StreamTool;
+export type DeepAgentsStreamEvent = StreamChunk | StreamMeta;
 
 @Injectable()
 export class DeepAgentsService {
@@ -22,7 +29,8 @@ export class DeepAgentsService {
     private readonly tickets: TicketsService,
     private readonly approvals: ApprovalsService,
     private readonly owners: OwnersService,
-    private readonly dashboard: DashboardService
+    private readonly dashboard: DashboardService,
+    private readonly llm: LlmService
   ) {}
 
   private readonly capabilityTool = tool(
@@ -40,8 +48,8 @@ export class DeepAgentsService {
       name: "get_platform_capability",
       description: "当用户询问系统/平台能力、支持范围、可做什么时调用",
       schema: z.object({
-        topic: z.string().optional().describe("用户关注的能力主题")
-      })
+        topic: z.string().describe("用户关注的能力主题；无特定主题可传“平台能力”")
+      }) as any
     }
   );
 
@@ -73,12 +81,12 @@ export class DeepAgentsService {
       name: "query_bills",
       description: "查询账单列表，支持业主、类型、支付状态、分页条件",
       schema: z.object({
-        owner: z.string().optional().describe("业主名或房号关键词"),
-        type: z.string().optional().describe("账单类型关键词"),
-        pay: z.string().optional().describe("支付状态：已支付|待支付|对账中|逾期"),
-        page: z.number().int().min(1).max(100).optional(),
-        pageSize: z.number().int().min(1).max(100).optional()
-      })
+        owner: z.string().describe("业主名或房号关键词；不筛选可传空字符串"),
+        type: z.string().describe("账单类型关键词；不筛选可传空字符串"),
+        pay: z.string().describe("支付状态：已支付|待支付|对账中|逾期；不筛选可传空字符串"),
+        page: z.number().int().min(1).max(100).describe("页码，默认传 1"),
+        pageSize: z.number().int().min(1).max(100).describe("每页条数，默认传 10")
+      }) as any
     }
   );
 
@@ -112,11 +120,11 @@ export class DeepAgentsService {
       name: "query_tickets",
       description: "查询工单列表，支持关键词和状态过滤",
       schema: z.object({
-        q: z.string().optional().describe("工单关键词（标题/描述/处理人）"),
-        status: z.string().optional().describe("状态：new|assigned|in_progress|done|closed 或中文"),
-        page: z.number().int().min(1).max(100).optional(),
-        pageSize: z.number().int().min(1).max(100).optional()
-      })
+        q: z.string().describe("工单关键词（标题/描述/处理人）；不筛选可传空字符串"),
+        status: z.string().describe("状态：new|assigned|in_progress|done|closed 或中文；不筛选可传空字符串"),
+        page: z.number().int().min(1).max(100).describe("页码，默认传 1"),
+        pageSize: z.number().int().min(1).max(100).describe("每页条数，默认传 10")
+      }) as any
     }
   );
 
@@ -142,12 +150,12 @@ export class DeepAgentsService {
       name: "query_approvals",
       description: "查询审批列表，支持关键词、状态、动作类型过滤",
       schema: z.object({
-        q: z.string().optional(),
-        status: z.string().optional().describe("状态：pending|approved|rejected 或中文"),
-        actionType: z.string().optional().describe("动作类型，如 billing_create、ticket_assign 等"),
-        page: z.number().int().min(1).max(100).optional(),
-        pageSize: z.number().int().min(1).max(100).optional()
-      })
+        q: z.string().describe("关键词；不筛选可传空字符串"),
+        status: z.string().describe("状态：pending|approved|rejected 或中文；不筛选可传空字符串"),
+        actionType: z.string().describe("动作类型，如 billing_create、ticket_assign；不筛选可传空字符串"),
+        page: z.number().int().min(1).max(100).describe("页码，默认传 1"),
+        pageSize: z.number().int().min(1).max(100).describe("每页条数，默认传 10")
+      }) as any
     }
   );
 
@@ -167,10 +175,10 @@ export class DeepAgentsService {
       name: "query_owners",
       description: "查询业主户信息，支持房号/业主姓名/电话关键词",
       schema: z.object({
-        q: z.string().optional(),
-        page: z.number().int().min(1).max(100).optional(),
-        pageSize: z.number().int().min(1).max(100).optional()
-      })
+        q: z.string().describe("关键词；不筛选可传空字符串"),
+        page: z.number().int().min(1).max(100).describe("页码，默认传 1"),
+        pageSize: z.number().int().min(1).max(100).describe("每页条数，默认传 10")
+      }) as any
     }
   );
 
@@ -183,7 +191,7 @@ export class DeepAgentsService {
     {
       name: "get_dashboard_overview",
       description: "获取看板概览与关键指标",
-      schema: z.object({})
+      schema: z.object({}) as any
     }
   );
 
@@ -246,13 +254,24 @@ export class DeepAgentsService {
       new HumanMessage(input.question)
     ];
 
+    if (input.thinking) {
+      yield* this.streamChatWithReasonerFinalAnswer(llmWithTools, conversation, toolMap, maxToolRounds);
+      return;
+    }
+
     for (let round = 0; round < maxToolRounds; round++) {
       // #region agent log
       fetch('http://127.0.0.1:7440/ingest/32c6740f-0b28-44ac-9021-1be15ccf10a9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e152f2'},body:JSON.stringify({sessionId:'e152f2',runId:'deepagents-schema-debug',hypothesisId:'H2',location:'backend/src/modules/ai/deepagents.service.ts:streamChat:beforeInvoke',message:'about to invoke llmWithTools',data:{round,conversationLength:conversation.length,lastMessageType:conversation.length?conversation[conversation.length-1]?.constructor?.name:''},timestamp:Date.now()})}).catch(()=>{});
       // #endregion
-      let ai: AIMessage;
+      let acc: AIMessageChunk | undefined;
       try {
-        ai = await llmWithTools.invoke(conversation);
+        const stream = await llmWithTools.stream(conversation);
+        for await (const raw of stream) {
+          const chunk = raw as AIMessageChunk;
+          acc = acc ? acc.concat(chunk) : chunk;
+          const cDelta = this.extractText(chunk.content);
+          if (cDelta) yield { kind: "content", text: cDelta };
+        }
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         // #region agent log
@@ -260,14 +279,15 @@ export class DeepAgentsService {
         // #endregion
         throw e;
       }
+      if (!acc) {
+        yield { kind: "content", text: "（模型无输出）" };
+        return;
+      }
+
+      const ai = this.chunkToAiMessage(acc);
       conversation.push(ai);
 
-      const reasoning = this.extractReasoning(ai.additional_kwargs);
-      if (reasoning) yield { kind: "reasoning", text: reasoning };
-
       if (!this.hasToolCalls(ai)) {
-        const text = this.extractText(ai.content);
-        if (text) yield { kind: "content", text };
         return;
       }
 
@@ -275,12 +295,16 @@ export class DeepAgentsService {
         const matched = toolMap.get(call.name);
         const args = this.safeToolArgs(call.args);
         if (!matched) {
-          yield { event: "tool", name: call.name, args, ok: false, note: "未知工具" };
+          conversation.push(
+            new ToolMessage({
+              tool_call_id: call.id || call.name,
+              content: "未知工具"
+            })
+          );
           continue;
         }
         try {
           const toolResult = await matched.invoke(call.args ?? {});
-          yield { event: "tool", name: call.name, args, ok: true };
           conversation.push(
             new ToolMessage({
               tool_call_id: call.id || call.name,
@@ -289,7 +313,6 @@ export class DeepAgentsService {
           );
         } catch (e: unknown) {
           const msg = e instanceof Error ? e.message : String(e);
-          yield { event: "tool", name: call.name, args, ok: false, note: msg.slice(0, 200) };
           conversation.push(
             new ToolMessage({
               tool_call_id: call.id || call.name,
@@ -303,6 +326,124 @@ export class DeepAgentsService {
     yield { kind: "content", text: "已达到最大工具调用轮次，请缩小问题范围后重试。" };
   }
 
+  /**
+   * deepseek-reasoner 不支持 Function Calling，因此工具轮仍用 deepseek-chat invoke；
+   * 最后一轮无 tool_calls 时，用直连 SSE 流式调用 reasoner，才能拿到 reasoning_content。
+   */
+  private async *streamChatWithReasonerFinalAnswer(
+    llmWithTools: { invoke: (input: BaseMessage[]) => Promise<AIMessage> },
+    conversation: Array<SystemMessage | HumanMessage | AIMessage | ToolMessage>,
+    toolMap: Map<string, { invoke: (input?: unknown) => Promise<unknown> }>,
+    maxToolRounds: number
+  ): AsyncGenerator<DeepAgentsStreamEvent> {
+    const reasonerModel = process.env.DEEPAGENTS_REASONER_MODEL?.trim() || "deepseek-reasoner";
+
+    for (let round = 0; round < maxToolRounds; round++) {
+      let ai: AIMessage;
+      try {
+        ai = await llmWithTools.invoke(conversation);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        fetch('http://127.0.0.1:7440/ingest/32c6740f-0b28-44ac-9021-1be15ccf10a9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e152f2'},body:JSON.stringify({sessionId:'e152f2',runId:'deepagents-schema-debug',hypothesisId:'H3',location:'backend/src/modules/ai/deepagents.service.ts:streamChatWithReasoner:invokeError',message:'llmWithTools invoke failed',data:{round,errorMessage:msg.slice(0,300)},timestamp:Date.now()})}).catch(()=>{});
+        throw e;
+      }
+
+      if (!this.hasToolCalls(ai)) {
+        const openaiMessages = this.langchainThreadToOpenAIMessages(conversation);
+        try {
+          for await (const part of this.llm.streamChatCompletionsWithMessages({
+            model: reasonerModel,
+            messages: openaiMessages
+          })) {
+            if (part.kind === "reasoning" && part.text) yield { kind: "reasoning", text: part.text };
+            if (part.kind === "content" && part.text) yield { kind: "content", text: part.text };
+          }
+        } catch {
+          const fallback = this.extractText(ai.content);
+          if (fallback) yield { kind: "content", text: fallback };
+          else yield { kind: "content", text: "（推理模型暂不可用，且无备用正文）" };
+        }
+        return;
+      }
+
+      conversation.push(ai);
+
+      for (const call of ai.tool_calls) {
+        const matched = toolMap.get(call.name);
+        const args = this.safeToolArgs(call.args);
+        if (!matched) {
+          conversation.push(
+            new ToolMessage({
+              tool_call_id: call.id || call.name,
+              content: "未知工具"
+            })
+          );
+          continue;
+        }
+        try {
+          const toolResult = await matched.invoke(call.args ?? {});
+          conversation.push(
+            new ToolMessage({
+              tool_call_id: call.id || call.name,
+              content: typeof toolResult === "string" ? toolResult : JSON.stringify(toolResult)
+            })
+          );
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          conversation.push(
+            new ToolMessage({
+              tool_call_id: call.id || call.name,
+              content: `工具调用失败：${msg}`
+            })
+          );
+        }
+      }
+    }
+
+    yield { kind: "content", text: "已达到最大工具调用轮次，请缩小问题范围后重试。" };
+  }
+
+  private langchainThreadToOpenAIMessages(
+    thread: Array<SystemMessage | HumanMessage | AIMessage | ToolMessage>
+  ): unknown[] {
+    const out: unknown[] = [];
+    for (const m of thread) {
+      if (m instanceof SystemMessage) {
+        out.push({ role: "system", content: this.extractText(m.content) });
+      } else if (m instanceof HumanMessage) {
+        out.push({ role: "user", content: this.extractText(m.content) });
+      } else if (m instanceof AIMessage) {
+        const text = this.extractText(m.content);
+        const calls = m.tool_calls;
+        if (Array.isArray(calls) && calls.length > 0) {
+          out.push({
+            role: "assistant",
+            content: text.length > 0 ? text : null,
+            tool_calls: calls.map((tc) => ({
+              id: tc.id ?? "",
+              type: "function",
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.args ?? {})
+              }
+            }))
+          });
+        } else {
+          out.push({ role: "assistant", content: text });
+        }
+      } else if (m instanceof ToolMessage) {
+        const c = m.content;
+        const content = typeof c === "string" ? c : JSON.stringify(c);
+        out.push({
+          role: "tool",
+          tool_call_id: m.tool_call_id,
+          content
+        });
+      }
+    }
+    return out;
+  }
+
   private createModel(thinking?: boolean) {
     const apiKey = (process.env.DEEPSEEK_API_KEY || process.env.LLM_API_KEY || "").trim();
     if (!apiKey) throw new Error("DEEPSEEK_API_KEY is not set");
@@ -313,7 +454,7 @@ export class DeepAgentsService {
       "https://api.deepseek.com/v1"
     ).replace(/\/+$/, "");
 
-    const model = process.env.DEEPAGENTS_MODEL?.trim() || "deepseek-chat";
+    const model = this.resolveAgentChatModelId();
     const temperature = thinking ? 0.1 : 0.2;
 
     return new ChatOpenAI({
@@ -326,7 +467,14 @@ export class DeepAgentsService {
   }
 
   private resolveModelName() {
-    return process.env.DEEPAGENTS_MODEL?.trim() || "deepseek-chat";
+    return this.resolveAgentChatModelId();
+  }
+
+  /** 工具调用仅 deepseek-chat（等）支持；reasoner 不能作为 bindTools 模型。 */
+  private resolveAgentChatModelId(): string {
+    const m = process.env.DEEPAGENTS_MODEL?.trim() || "deepseek-chat";
+    if (m === "deepseek-reasoner") return "deepseek-chat";
+    return m;
   }
 
   private hasToolCalls(message: AIMessage): message is AIMessage & { tool_calls: Array<{ id?: string; name: string; args?: Record<string, unknown> }> } {
@@ -348,10 +496,16 @@ export class DeepAgentsService {
       .join("");
   }
 
-  private extractReasoning(additional: unknown): string {
-    if (!additional || typeof additional !== "object") return "";
-    const rc = (additional as { reasoning_content?: unknown }).reasoning_content;
-    return typeof rc === "string" ? rc : "";
+  private chunkToAiMessage(chunk: AIMessageChunk): AIMessage {
+    return new AIMessage({
+      content: chunk.content,
+      tool_calls: chunk.tool_calls ?? [],
+      invalid_tool_calls: chunk.invalid_tool_calls ?? [],
+      additional_kwargs: chunk.additional_kwargs ?? {},
+      response_metadata: chunk.response_metadata,
+      usage_metadata: chunk.usage_metadata,
+      id: chunk.id
+    });
   }
 
   private safeToolArgs(args: unknown): Record<string, unknown> {

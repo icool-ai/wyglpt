@@ -1,168 +1,249 @@
 'use client'
 
-import { BulbOutlined, SendOutlined } from '@ant-design/icons'
-import { App, Button, Card, Col, Collapse, Divider, Input, Row, Segmented, Space, Switch, Typography } from 'antd'
-import { useEffect, useState } from 'react'
-import { AdminShell } from '../../components/AdminShell'
 import {
-  apiFetchJson,
-  apiFetchStream,
-  getAccessToken,
-  getApiBaseUrl,
-  readSseDataLines,
-  type LlmStreamChunk,
-} from '../../lib/api'
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  PlusOutlined,
+  RobotOutlined,
+  SearchOutlined,
+  SendOutlined,
+} from '@ant-design/icons'
+import { App, Button, Empty, Input, Segmented, Select, Spin, Switch, Typography } from 'antd'
+import { useEffect, useMemo, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { AdminShell } from '../../components/AdminShell'
+import { apiFetchStream, getAccessToken, getApiBaseUrl, readSseDataLines, type LlmStreamChunk } from '../../lib/api'
 
-type AskResponse = {
-  answer?: string
-  insights?: string[]
-  recommendations?: string[]
+type ChatRole = 'user' | 'assistant'
+type ConversationMode = 'chat' | 'professional'
+type StreamHistoryItem = { role: 'user' | 'assistant'; content: string }
+
+type ChatMessage = {
+  id: string
+  role: ChatRole
+  content: string
   reasoning?: string
-  intent?: string
-  total?: number
-  page?: number
-  pageSize?: number
-  items?: unknown[]
-  llmUsed?: boolean
-  llmNarrativeUsed?: boolean
+  mode?: ConversationMode
+}
+
+type Conversation = {
+  id: string
+  title: string
+  model: string
+  deepThinking: boolean
+  mode: ConversationMode
+  messages: ChatMessage[]
+}
+
+const MODEL_OPTIONS = [
+  { label: 'DeepSeek', value: 'deepseek', disabled: false },
+  { label: 'Qwen（预留）', value: 'qwen', disabled: true },
+  { label: 'OpenAI（预留）', value: 'openai', disabled: true },
+]
+
+function cn(...classNames: Array<string | false | null | undefined>) {
+  return classNames.filter(Boolean).join(' ')
+}
+
+function uid() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function buildConversationTitle(firstQuestion: string) {
+  const text = firstQuestion.trim().replace(/\s+/g, ' ')
+  if (!text) return '新对话'
+  return text.length > 16 ? `${text.slice(0, 16)}...` : text
+}
+
+function MarkdownMessage({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ children }) => <p className="mb-2 whitespace-pre-wrap">{children}</p>,
+        ul: ({ children }) => <ul className="mb-2 pl-5 list-disc">{children}</ul>,
+        ol: ({ children }) => <ol className="mb-2 pl-5 list-decimal">{children}</ol>,
+        code: ({ className, children }) =>
+          className ? (
+            <pre className="bg-slate-100 rounded-lg p-2 overflow-auto text-xs">
+              <code>{children}</code>
+            </pre>
+          ) : (
+            <code className="px-1 py-0.5 rounded bg-slate-100 text-slate-700">{children}</code>
+          ),
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  )
 }
 
 export default function AiAssistantPage() {
   const { message } = App.useApp()
-  const [result, setResult] = useState<unknown>(null)
+  const [queryText, setQueryText] = useState('')
+  const [inputText, setInputText] = useState('')
   const [loading, setLoading] = useState(false)
-  const [prompt, setPrompt] = useState('')
-  const [thinking, setThinking] = useState(true)
-  const [showReasoning, setShowReasoning] = useState(true)
-  /** 流式 SSE：chat=仅大模型；askDb=查库后润色；deepagents=LangChain DeepAgents 最小链路 */
-  const [streamMode, setStreamMode] = useState(false)
-  const [streamKind, setStreamKind] = useState<'chat' | 'askDb' | 'deepagents'>('askDb')
-  const [streamReasoning, setStreamReasoning] = useState('')
-  const [streamAnswer, setStreamAnswer] = useState('')
-  const [streamMeta, setStreamMeta] = useState<Record<string, unknown> | null>(null)
-  const [streamToolTrace, setStreamToolTrace] = useState<string[]>([])
-  const [streamInsights, setStreamInsights] = useState<string[]>([])
-  const [streamRecommendations, setStreamRecommendations] = useState<string[]>([])
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [activeId, setActiveId] = useState<string>('')
+  const [conversations, setConversations] = useState<Conversation[]>([])
 
   useEffect(() => {
     if (!getAccessToken()) window.location.href = '/login'
   }, [])
 
-  async function askInsight() {
-    setLoading(true)
-    setResult(null)
-    try {
-      const res = await apiFetchJson<unknown>(`${getApiBaseUrl()}/ai/kpi-insight`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          metric: 'paymentRate',
-          current: 0.52,
-          previous: 0.63,
-        }),
-      })
-      setResult(res)
-      message.success('已生成洞察')
-    } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '请求失败')
-    } finally {
-      setLoading(false)
+  useEffect(() => {
+    if (conversations.length > 0 || activeId) return
+    const id = uid()
+    setConversations([{ id, title: '新对话', model: 'deepseek', deepThinking: false, mode: 'chat', messages: [] }])
+    setActiveId(id)
+  }, [activeId, conversations.length])
+
+  const activeConversation = useMemo(
+    () => conversations.find((item) => item.id === activeId) ?? null,
+    [activeId, conversations],
+  )
+
+  const filteredConversations = useMemo(() => {
+    const q = queryText.trim().toLowerCase()
+    if (!q) return conversations
+    return conversations.filter((item) => item.title.toLowerCase().includes(q))
+  }, [conversations, queryText])
+
+  function createConversation() {
+    const id = uid()
+    const nextConversation: Conversation = {
+      id,
+      title: '新对话',
+      model: 'deepseek',
+      deepThinking: false,
+      mode: 'chat',
+      messages: [],
     }
+    setConversations((prev) => [nextConversation, ...prev])
+    setActiveId(id)
+    setInputText('')
   }
 
-  async function askBillsQuery() {
-    const q = prompt.trim()
-    if (!q) return
-
-    if (streamMode) {
-      await askStream(q)
-      return
-    }
-
-    setLoading(true)
-    setResult(null)
-    try {
-      const res = await apiFetchJson<AskResponse>(`${getApiBaseUrl()}/ai/ask`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: q,
-          thinking,
-          showReasoning,
-        }),
-      })
-      setResult(res)
-      message.success('已生成问答结果')
-    } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '请求失败')
-    } finally {
-      setLoading(false)
-    }
+  function updateConversationModel(conversationId: string, model: string) {
+    setConversations((prev) => prev.map((item) => (item.id === conversationId ? { ...item, model } : item)))
   }
 
-  async function askStream(q: string) {
+  function updateDeepThinking(conversationId: string, deepThinking: boolean) {
+    setConversations((prev) => prev.map((item) => (item.id === conversationId ? { ...item, deepThinking } : item)))
+  }
+
+  function updateConversationMode(conversationId: string, mode: ConversationMode) {
+    setConversations((prev) => prev.map((item) => (item.id === conversationId ? { ...item, mode } : item)))
+  }
+
+  async function sendMessage() {
+    const q = inputText.trim()
+    if (!q || loading || !activeConversation) return
+
+    const conversationId = activeConversation.id
+    const history: StreamHistoryItem[] = activeConversation.messages
+      .filter((x) => (x.role === 'user' || x.role === 'assistant') && x.content.trim())
+      .slice(-40)
+      .map((x) => ({ role: x.role, content: x.content.trim() }))
+    const userMsg: ChatMessage = { id: uid(), role: 'user', content: q }
+    const assistantId = uid()
+
+    setInputText('')
     setLoading(true)
-    setResult(null)
-    setStreamReasoning('')
-    setStreamAnswer('')
-    setStreamMeta(null)
-    setStreamToolTrace([])
-    setStreamInsights([])
-    setStreamRecommendations([])
-    const url =
-      streamKind === 'askDb'
-        ? `${getApiBaseUrl()}/ai/ask-stream`
-        : streamKind === 'chat'
-          ? `${getApiBaseUrl()}/ai/chat-stream`
-          : `${getApiBaseUrl()}/ai/deepagents-stream`
-    const body =
-      streamKind === 'askDb'
-        ? JSON.stringify({ question: q, thinking, showReasoning })
-        : JSON.stringify({ question: q, thinking })
+    setConversations((prev) =>
+      prev.map((item) => {
+        if (item.id !== conversationId) return item
+        return {
+          ...item,
+          title: item.messages.length === 0 ? buildConversationTitle(q) : item.title,
+          messages: [...item.messages, userMsg, { id: assistantId, role: 'assistant', content: '', mode: item.mode }],
+        }
+      }),
+    )
+
     try {
-      const res = await apiFetchStream(url, {
+      const isProfessional = activeConversation.mode === 'professional'
+      const response = await apiFetchStream(isProfessional ? `${getApiBaseUrl()}/ai/ask-stream` : `${getApiBaseUrl()}/ai/chat-stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body,
+        body: isProfessional
+          ? JSON.stringify({
+              question: q,
+              thinking: activeConversation.deepThinking,
+              showReasoning: activeConversation.deepThinking,
+              history,
+            })
+          : JSON.stringify({ question: q, thinking: activeConversation.deepThinking, history }),
       })
-      await readSseDataLines(res, (data) => {
+
+      await readSseDataLines(response, (data) => {
         if ('event' in data && (data as { event?: string }).event === 'error') {
-          message.error(String((data as { message?: string }).message ?? '流式请求失败'))
+          message.error(String((data as { message?: string }).message ?? '请求失败'))
           return
         }
         if ('event' in data && (data as { event?: string }).event === 'meta') {
-          const m = data as Record<string, unknown>
-          setStreamMeta(m)
-          if (m.terminal === true) {
-            message.info('无法识别业务意图或无需流式润色')
-          }
-          return
-        }
-        if ('event' in data && (data as { event?: string }).event === 'extras') {
-          const ex = data as { insights?: string[]; recommendations?: string[] }
-          if (Array.isArray(ex.insights)) setStreamInsights(ex.insights)
-          if (Array.isArray(ex.recommendations)) setStreamRecommendations(ex.recommendations)
-          return
-        }
-        if ('event' in data && (data as { event?: string }).event === 'tool') {
-          const t = data as { name?: string; ok?: boolean; args?: Record<string, unknown>; note?: string }
-          const name = String(t.name ?? 'unknown_tool')
-          const status = t.ok ? 'OK' : 'ERR'
-          const argsText = t.args ? JSON.stringify(t.args) : '{}'
-          const note = t.note ? ` (${String(t.note)})` : ''
-          setStreamToolTrace((arr) => [...arr, `${name} ${status} ${argsText}${note}`])
+          const meta = data as { terminal?: boolean; answer?: string; baseAnswer?: string }
+          const fallback =
+            typeof meta.answer === 'string' && meta.answer.trim()
+              ? meta.answer
+              : typeof meta.baseAnswer === 'string' && meta.baseAnswer.trim()
+                ? meta.baseAnswer
+                : ''
+          if (!meta.terminal || !fallback) return
+          setConversations((prev) =>
+            prev.map((item) => {
+              if (item.id !== conversationId) return item
+              return {
+                ...item,
+                messages: item.messages.map((msg) => (msg.id === assistantId ? { ...msg, content: fallback } : msg)),
+              }
+            }),
+          )
           return
         }
         const chunk = data as LlmStreamChunk
-        if ('kind' in chunk && chunk.kind === 'reasoning' && chunk.text) {
-          setStreamReasoning((s) => s + chunk.text)
-        }
         if ('kind' in chunk && chunk.kind === 'content' && chunk.text) {
-          setStreamAnswer((s) => s + chunk.text)
+          setConversations((prev) =>
+            prev.map((item) => {
+              if (item.id !== conversationId) return item
+              return {
+                ...item,
+                messages: item.messages.map((msg) =>
+                  msg.id === assistantId ? { ...msg, content: `${msg.content}${chunk.text}` } : msg,
+                ),
+              }
+            }),
+          )
+        }
+        if ('kind' in chunk && chunk.kind === 'reasoning' && chunk.text) {
+          setConversations((prev) =>
+            prev.map((item) => {
+              if (item.id !== conversationId) return item
+              return {
+                ...item,
+                messages: item.messages.map((msg) =>
+                  msg.id === assistantId
+                    ? { ...msg, reasoning: `${msg.reasoning ?? ''}${chunk.text}` }
+                    : msg,
+                ),
+              }
+            }),
+          )
         }
       })
-      message.success('流式输出完成')
     } catch (e: unknown) {
+      setConversations((prev) =>
+        prev.map((item) => {
+          if (item.id !== conversationId) return item
+          return {
+            ...item,
+            messages: item.messages.map((msg) =>
+              msg.id === assistantId ? { ...msg, content: '抱歉，当前请求失败，请稍后重试。' } : msg,
+            ),
+          }
+        }),
+      )
       message.error(e instanceof Error ? e.message : '请求失败')
     } finally {
       setLoading(false)
@@ -170,283 +251,194 @@ export default function AiAssistantPage() {
   }
 
   return (
-    <AdminShell title="AI 助手" contentClassName="pb-24">
-      <Row gutter={[16, 16]}>
-        <Col xs={24} lg={10}>
-          <Card
-            title={
-              <span>
-                <BulbOutlined className="mr-2 text-[#7c3aed]" />
-                快捷能力
-              </span>
-            }
-            className="shadow-sm border border-slate-100 h-full"
-          >
-            <Typography.Paragraph type="secondary" className="text-sm">
-              设计约定：完整能力在本页；全局顶栏「AI 助手」打开右侧抽屉作快捷入口。
-            </Typography.Paragraph>
-            <Divider className="my-3" />
-            <Space direction="vertical" className="w-full" size="middle">
-              <Button type="primary" block loading={loading} onClick={() => void askInsight()}>
-                生成收缴率洞察（示例接口）
+    <AdminShell title="AI 助手" contentClassName="pb-0">
+      <div className="h-[calc(100vh-220px)] min-h-[620px] rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden flex">
+        {!sidebarCollapsed ? (
+          <aside className="w-[280px] border-r border-slate-200 bg-slate-50/70 flex flex-col">
+            <div className="p-4 border-b border-slate-200">
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <Typography.Text strong>历史对话</Typography.Text>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<MenuFoldOutlined />}
+                  onClick={() => setSidebarCollapsed(true)}
+                  aria-label="收起历史对话"
+                />
+              </div>
+              <Button type="primary" block icon={<PlusOutlined />} onClick={createConversation}>
+                新增对话
               </Button>
-              <div>
-                <Typography.Text className="text-sm font-medium block mb-2">自定义提问（全局问答）</Typography.Text>
-                <Space align="center" className="mb-2" wrap>
-                  <Space size={6} align="center">
-                    <Switch checked={streamMode} onChange={setStreamMode} />
-                    <Typography.Text className="text-xs text-slate-600">流式输出（SSE）</Typography.Text>
-                  </Space>
-                  <Space size={6} align="center">
-                    <Switch checked={thinking} onChange={setThinking} />
-                    <Typography.Text className="text-xs text-slate-600">思考模式（deepseek-reasoner）</Typography.Text>
-                  </Space>
-                  <Space size={6} align="center">
-                    <Switch
-                      checked={showReasoning}
-                      onChange={setShowReasoning}
-                      disabled={!thinking || (streamMode && (streamKind === 'chat' || streamKind === 'deepagents'))}
-                    />
-                    <Typography.Text className="text-xs text-slate-600">展示意图思考（非流式 /ask 或流式查库）</Typography.Text>
-                  </Space>
-                </Space>
-                {streamMode ? (
-                  <div className="mb-2">
-                    <Typography.Text className="text-xs text-slate-600 block mb-1">流式类型</Typography.Text>
+              <Input
+                allowClear
+                value={queryText}
+                onChange={(e) => setQueryText(e.target.value)}
+                placeholder="搜索对话"
+                prefix={<SearchOutlined className="text-slate-400" />}
+                className="mt-3"
+              />
+            </div>
+
+            <div className="flex-1 overflow-auto p-2">
+              {filteredConversations.length === 0 ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无匹配对话" className="mt-10" />
+              ) : (
+                filteredConversations.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setActiveId(item.id)}
+                    className={cn(
+                      'w-full text-left rounded-xl px-3 py-2 mb-2 border transition',
+                      activeId === item.id
+                        ? 'border-violet-300 bg-violet-50 text-violet-900'
+                        : 'border-transparent bg-white hover:border-slate-200 text-slate-700',
+                    )}
+                  >
+                    <div className="text-sm font-medium truncate">{item.title}</div>
+                    <div className="text-xs text-slate-400 mt-1">{item.messages.length} 条消息</div>
+                  </button>
+                ))
+              )}
+            </div>
+          </aside>
+        ) : (
+          <aside className="w-[56px] border-r border-slate-200 bg-slate-50/70 p-2">
+            <Button
+              type="text"
+              icon={<MenuUnfoldOutlined />}
+              onClick={() => setSidebarCollapsed(false)}
+              aria-label="展开历史对话"
+              className="w-full"
+            />
+          </aside>
+        )}
+
+        <section className="flex-1 flex flex-col">
+          <header className="px-5 py-3 border-b border-slate-200 flex items-center justify-between">
+            <Typography.Text strong>{activeConversation?.title ?? 'AI 助手'}</Typography.Text>
+          </header>
+
+          <div className="flex-1 overflow-auto px-6 py-5 bg-slate-50/40">
+            {!activeConversation || activeConversation.messages.length === 0 ? (
+              <div className="h-full flex items-center justify-center">
+                <div className="text-center">
+                  <RobotOutlined className="text-3xl text-violet-500 mb-3" />
+                  <Typography.Title level={3} className="!mb-1">
+                    你好，我是AI助手
+                  </Typography.Title>
+                  <Typography.Text type="secondary">你可以开始提问，左侧可管理历史对话。</Typography.Text>
+                </div>
+              </div>
+            ) : (
+              <div className="max-w-4xl mx-auto space-y-4">
+                {activeConversation.messages.map((msg) => (
+                  <div
+                    key={msg.id}
+                    className={cn(
+                      'rounded-2xl px-4 py-3 text-sm leading-7',
+                      msg.role === 'user' && 'bg-violet-600 text-white ml-10',
+                      msg.role === 'assistant' && 'bg-white border border-slate-200 mr-10 text-slate-800',
+                    )}
+                  >
+                    {msg.role === 'assistant' ? (
+                      <div>
+                        {msg.reasoning?.trim() ? (
+                          <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                            <Typography.Text className="block text-xs text-amber-700 mb-1">思考过程</Typography.Text>
+                            <div className="text-xs text-amber-900 whitespace-pre-wrap leading-6">
+                              {msg.reasoning}
+                            </div>
+                          </div>
+                        ) : null}
+                        <MarkdownMessage content={msg.content || (loading ? '正在思考...' : '')} />
+                      </div>
+                    ) : (
+                      <p className="whitespace-pre-wrap mb-0">{msg.content}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <footer className="p-4 border-t border-slate-200">
+            <div className="max-w-4xl mx-auto">
+              <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-2.5">
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-[auto_auto_1fr] md:items-center">
+                  <div className="inline-flex items-center gap-2">
+                    <Typography.Text type="secondary" className="text-xs !mb-0 whitespace-nowrap">
+                      模式
+                    </Typography.Text>
                     <Segmented
                       size="small"
-                      block
-                      value={streamKind}
-                      onChange={(v) => setStreamKind(v as 'chat' | 'askDb' | 'deepagents')}
+                      value={activeConversation?.mode ?? 'chat'}
+                      onChange={(value) =>
+                        activeConversation && updateConversationMode(activeConversation.id, value as ConversationMode)
+                      }
                       options={[
-                        { label: '查库 + 流式润色', value: 'askDb' },
-                        { label: '纯对话（不查库）', value: 'chat' },
-                        { label: 'DeepAgents（LangChain）', value: 'deepagents' },
+                        { label: '自由聊天', value: 'chat' },
+                        { label: '专业问询', value: 'professional' },
                       ]}
+                      className="min-w-[186px]"
                     />
                   </div>
-                ) : null}
-                <Typography.Paragraph type="secondary" className="!mb-3 text-xs leading-relaxed bg-amber-50/80 border border-amber-100 rounded-lg px-3 py-2">
-                  <strong className="text-amber-900">接口区别：</strong>
-                  <Typography.Text code>/ai/ask</Typography.Text> 与 <Typography.Text code>/ai/ask-stream</Typography.Text>{' '}
-                  都会<strong>查库</strong>；后者在返回真实 <Typography.Text code>items</Typography.Text> 后，用 SSE <strong>流式生成润色正文</strong>。
-                  <Typography.Text code>/ai/chat-stream</Typography.Text> 仅对话演示，<strong>不查库</strong>。<Typography.Text code>/ai/deepagents-stream</Typography.Text> 为
-                  LangChain DeepAgents 最小链路（支持示例工具调用）。
-                </Typography.Paragraph>
-                <Input.TextArea
-                  rows={4}
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  placeholder="例如：有哪些待支付的物业费账单？/有哪些未关闭的工单？/有哪些业主信息？"
-                />
-                <Button
-                  type="default"
-                  block
-                  className="mt-2"
-                  icon={<SendOutlined />}
-                  loading={loading}
-                  disabled={!prompt.trim()}
-                  onClick={() => void askBillsQuery()}
-                >
-                  {streamMode
-                    ? streamKind === 'askDb'
-                      ? '发送（查库+流式）'
-                      : streamKind === 'chat'
-                        ? '发送（纯对话流式）'
-                        : '发送（DeepAgents 流式）'
-                    : '发送（查询）'}
-                </Button>
-              </div>
-            </Space>
-          </Card>
-        </Col>
-        <Col xs={24} lg={14}>
-          <Card title="返回结果" className="shadow-sm border border-slate-100 min-h-[360px]">
-            {streamMode && (streamMeta || streamReasoning || streamAnswer || loading || streamInsights.length > 0) ? (
-              <Space direction="vertical" className="w-full" size="middle">
-                <Typography.Text type="secondary" className="text-xs block">
-                  当前流式：{' '}
-                  <Typography.Text code>
-                    {streamKind === 'askDb'
-                      ? '/ai/ask-stream'
-                      : streamKind === 'chat'
-                        ? '/ai/chat-stream'
-                        : '/ai/deepagents-stream'}
-                  </Typography.Text>
-                  {streamKind === 'askDb' ? '（先 meta 含查库结果，再打字润色）' : streamKind === 'chat' ? '（不查库）' : '（LangChain DeepAgents）'}
-                </Typography.Text>
-                {streamKind === 'askDb' && streamMeta && streamMeta.terminal !== true ? (
-                  <div>
-                    <Typography.Text className="text-sm font-medium block mb-1">查库结果（meta）</Typography.Text>
-                    <Typography.Text type="secondary" className="text-xs block mb-1">
-                      {String(streamMeta.intent ?? '') ? `意图：${String(streamMeta.intent)}；` : ''}
-                      {typeof streamMeta.total === 'number' ? `共 ${String(streamMeta.total)} 条` : ''}
+                  <div className="inline-flex items-center gap-2">
+                    <Typography.Text type="secondary" className="text-xs !mb-0 whitespace-nowrap">
+                      深度思考
                     </Typography.Text>
-                    {typeof streamMeta.baseAnswer === 'string' ? (
-                      <Typography.Paragraph className="text-xs mb-2 bg-white border border-slate-100 rounded p-2 whitespace-pre-wrap">
-                        {streamMeta.baseAnswer}
-                      </Typography.Paragraph>
-                    ) : null}
-                    
+                    <Switch
+                      size="small"
+                      checked={Boolean(activeConversation?.deepThinking)}
+                      onChange={(checked) => activeConversation && updateDeepThinking(activeConversation.id, checked)}
+                    />
                   </div>
-                ) : null}
-                {streamKind === 'askDb' && streamMeta && streamMeta.terminal === true ? (
-                  <Typography.Paragraph className="text-sm">{(streamMeta.answer as string) || '（无）'}</Typography.Paragraph>
-                ) : null}
-                {streamKind === 'deepagents' && streamMeta ? (
-                  <Typography.Text type="secondary" className="text-xs block">
-                    模型：{String(streamMeta.model ?? '')}
-                    {typeof streamMeta.maxToolRounds === 'number' ? `；最大工具轮次：${String(streamMeta.maxToolRounds)}` : ''}
-                  </Typography.Text>
-                ) : null}
-                {streamKind === 'deepagents' && streamToolTrace.length > 0 ? (
-                  <div>
-                    <Typography.Text className="text-sm font-medium block mb-1">工具调用轨迹</Typography.Text>
-                    <pre className="text-xs overflow-auto max-h-[180px] m-0 bg-slate-50 p-3 rounded-lg border border-slate-100 whitespace-pre-wrap">
-                      {streamToolTrace.join('\n')}
-                    </pre>
-                  </div>
-                ) : null}
-                {thinking && (streamReasoning || (streamKind === 'askDb' && loading)) ? (
-                  <div>
-                    <Typography.Text className="text-sm font-medium block mb-1">
-                      {streamKind === 'askDb' ? '润色过程（推理片段，若有）' : '思考过程（增量）'}
+                  <div className="inline-flex items-center gap-2 md:justify-end">
+                    <Typography.Text type="secondary" className="text-xs !mb-0 whitespace-nowrap">
+                      模型
                     </Typography.Text>
-                    <div className="text-sm text-slate-700 whitespace-pre-wrap max-h-[280px] overflow-auto rounded-lg border border-amber-100 bg-amber-50/60 p-3">
-                      {streamMeta && typeof streamMeta.reasoning === 'string' && streamMeta.reasoning
-                        ? `${String(streamMeta.reasoning)}\n`
-                        : ''}
-                      {streamReasoning || (loading ? '…' : '')}
-                      {!streamReasoning && !loading ? '（无）' : null}
-                    </div>
-                  </div>
-                ) : null}
-                <div>
-                  <Typography.Text className="text-sm font-medium block mb-1">回答（增量）</Typography.Text>
-                  <div className="text-sm text-slate-800 whitespace-pre-wrap max-h-[320px] overflow-auto rounded-lg border border-slate-100 bg-slate-50 p-3">
-                    {streamAnswer || (loading ? '…' : '（无）')}
+                    <Select
+                      size="small"
+                      value={activeConversation?.model ?? 'deepseek'}
+                      onChange={(value) => activeConversation && updateConversationModel(activeConversation.id, value)}
+                      options={MODEL_OPTIONS}
+                      className="w-full md:w-[210px]"
+                    />
                   </div>
                 </div>
-                {streamKind === 'askDb' && (streamInsights.length > 0 || streamRecommendations.length > 0) ? (
-                  <div>
-                    {streamInsights.length > 0 ? (
-                      <div className="mb-2">
-                        <Typography.Text className="text-sm font-medium block mb-1">洞察（extras）</Typography.Text>
-                        <ul className="m-0 pl-5">
-                          {streamInsights.map((x, idx) => (
-                            <li key={idx} className="text-sm">
-                              {x}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                    {streamRecommendations.length > 0 ? (
-                      <div>
-                        <Typography.Text className="text-sm font-medium block mb-1">建议（extras）</Typography.Text>
-                        <ul className="m-0 pl-5">
-                          {streamRecommendations.map((x, idx) => (
-                            <li key={idx} className="text-sm">
-                              {x}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </Space>
-            ) : !result ? (
-              <Typography.Text type="secondary">点击左侧能力或等待接口返回后在此展示答案/摘要。</Typography.Text>
-            ) : (
-              (() => {
-                const r = result as AskResponse
-                const isAskResponse = typeof r?.answer === 'string' || typeof r?.reasoning === 'string'
-
-                if (!isAskResponse) {
-                  return (
-                    <pre className="text-xs overflow-auto max-h-[480px] m-0 bg-slate-50 p-4 rounded-lg border border-slate-100">
-                      {JSON.stringify(result, null, 2)}
-                    </pre>
-                  )
-                }
-
-                return (
-                  <Space direction="vertical" className="w-full" size="middle">
-                    <div>
-                      <Typography.Text className="text-xs text-slate-500">
-                        {r.intent ? `意图：${r.intent}；` : ''}
-                        {typeof r.total === 'number' ? `共 ${r.total} 条；` : ''}
-                        {typeof r.page === 'number' ? `第 ${r.page} 页` : ''}
-                      </Typography.Text>
-                      <Typography.Title level={5} className="!mb-2 mt-2">
-                        答案
-                      </Typography.Title>
-                      <Typography.Paragraph className="mb-0 whitespace-pre-wrap">{r.answer || '（无内容）'}</Typography.Paragraph>
-                    </div>
-
-                    {Array.isArray(r.insights) && r.insights.length > 0 ? (
-                      <div>
-                        <Typography.Text className="text-sm font-medium block mb-1">洞察</Typography.Text>
-                        <ul className="m-0 pl-5">
-                          {r.insights.map((x, idx) => (
-                            <li key={idx} className="text-sm text-slate-700">
-                              {x}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-
-                    {Array.isArray(r.recommendations) && r.recommendations.length > 0 ? (
-                      <div>
-                        <Typography.Text className="text-sm font-medium block mb-1">建议</Typography.Text>
-                        <ul className="m-0 pl-5">
-                          {r.recommendations.map((x, idx) => (
-                            <li key={idx} className="text-sm text-slate-700">
-                              {x}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-
-                    {typeof r.reasoning === 'string' && r.reasoning.trim().length > 0 ? (
-                      <Collapse
-                        items={[
-                          {
-                            key: 'reasoning',
-                            label: '思考过程（reasoning_content）',
-                            children: (
-                              <pre className="text-xs overflow-auto max-h-[360px] m-0 bg-slate-50 p-4 rounded-lg border border-slate-100 whitespace-pre-wrap">
-                                {r.reasoning}
-                              </pre>
-                            ),
-                          },
-                        ]}
-                      />
-                    ) : null}
-
-                    <Collapse
-                      items={[
-                        {
-                          key: 'raw',
-                          label: '原始 JSON（调试）',
-                          children: (
-                            <pre className="text-xs overflow-auto max-h-[360px] m-0 bg-slate-50 p-4 rounded-lg border border-slate-100">
-                              {JSON.stringify(result, null, 2)}
-                            </pre>
-                          ),
-                        },
-                      ]}
-                    />
-                  </Space>
-                )
-              })()
-            )}
-          </Card>
-        </Col>
-      </Row>
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <Input.TextArea
+                  autoSize={{ minRows: 2, maxRows: 6 }}
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  onPressEnter={(e) => {
+                    if (!e.shiftKey) {
+                      e.preventDefault()
+                      void sendMessage()
+                    }
+                  }}
+                  placeholder={
+                    activeConversation?.mode === 'professional'
+                      ? '专业问询模式：将结合数据库内容回答'
+                      : '自由聊天模式：输入你的问题'
+                  }
+                  className="!rounded-xl"
+                />
+                <Button
+                  type="primary"
+                  icon={loading ? <Spin size="small" /> : <SendOutlined />}
+                  disabled={!inputText.trim() || loading || !activeConversation}
+                  onClick={() => void sendMessage()}
+                  className="h-[42px] min-w-[92px] rounded-xl"
+                >
+                  发送
+                </Button>
+              </div>
+            </div>
+          </footer>
+        </section>
+      </div>
     </AdminShell>
   )
 }

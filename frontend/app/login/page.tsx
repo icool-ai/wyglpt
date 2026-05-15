@@ -36,6 +36,15 @@ function loginErrorMessage(err: unknown): string {
   return e.message
 }
 
+function getRedirectAfterLogin(): string {
+  if (typeof window === 'undefined') return '/'
+  const raw = new URLSearchParams(window.location.search).get('next') || '/'
+  // 仅允许站内相对路径，避免开放重定向风险。
+  if (!raw.startsWith('/')) return '/'
+  if (raw.startsWith('//')) return '/'
+  return raw
+}
+
 export default function LoginPage() {
   const [form] = Form.useForm<{ username: string; password: string }>()
   const [rememberDevice, setRememberDevice] = useState(false)
@@ -83,7 +92,7 @@ export default function LoginPage() {
       } catch {
         /* ignore */
       }
-      window.location.href = '/'
+      window.location.href = getRedirectAfterLogin()
     } catch (e: unknown) {
       setError(loginErrorMessage(e))
     } finally {

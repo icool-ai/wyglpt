@@ -28,6 +28,35 @@ export function getAccessToken(): string | null {
   return localStorage.getItem("accessToken");
 }
 
+function clearAccessToken(): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem("accessToken");
+  } catch {
+    /* ignore */
+  }
+}
+
+function shouldAutoRedirectToLogin(url: string, status: number, hasAuthHeader: boolean): boolean {
+  if (typeof window === "undefined") return false;
+  if (status !== 401) return false;
+  if (!hasAuthHeader) return false;
+
+  // 登录接口本身 401（账号/密码错误）不应触发强制跳转。
+  return !url.includes("/auth/login");
+}
+
+function redirectToLoginIfNeeded(url: string, status: number, hasAuthHeader: boolean): void {
+  if (!shouldAutoRedirectToLogin(url, status, hasAuthHeader)) return;
+
+  clearAccessToken();
+
+  if (window.location.pathname === "/login") return;
+  const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  const target = next ? `/login?next=${encodeURIComponent(next)}` : "/login";
+  window.location.assign(target);
+}
+
 export function authHeaders(): Record<string, string> {
   const token = getAccessToken();
   // #region agent log
@@ -76,6 +105,7 @@ export async function apiFetchJson<T>(url: string, init?: RequestInit): Promise<
     fetch('http://127.0.0.1:7440/ingest/32c6740f-0b28-44ac-9021-1be15ccf10a9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1cd619'},body:JSON.stringify({sessionId:'1cd619',runId:'ask-401-debug',hypothesisId:'H7',location:'frontend/lib/api.ts:apiFetchJson:notOk',message:'api returned non-2xx',data:{url,status:res.status,hasAuthorizationHeader:Boolean(headers.Authorization)},timestamp:Date.now()})}).catch(()=>{});
     // #endregion
     const message = parseErrorBody(text, res.status);
+    redirectToLoginIfNeeded(url, res.status, Boolean(headers.Authorization));
     const err = new Error(message) as ApiRequestError;
     err.status = res.status;
     throw err;
@@ -106,6 +136,7 @@ export async function apiDownloadBlob(url: string, init?: RequestInit): Promise<
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     const message = parseErrorBody(text, res.status);
+    redirectToLoginIfNeeded(url, res.status, Boolean(headers.Authorization));
     const err = new Error(message) as ApiRequestError;
     err.status = res.status;
     throw err;
@@ -132,6 +163,7 @@ export async function apiFetchStream(url: string, init?: RequestInit): Promise<R
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     const message = parseErrorBody(text, res.status);
+    redirectToLoginIfNeeded(url, res.status, Boolean(headers.Authorization));
     const err = new Error(message) as ApiRequestError;
     err.status = res.status;
     throw err;

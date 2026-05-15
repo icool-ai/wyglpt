@@ -88,9 +88,21 @@ export class AiController {
     const model = body.thinking ? "deepseek-reasoner" : undefined;
 
     try {
+      const historyRaw = Array.isArray(body.history)
+        ? body.history
+            .filter((x) => (x?.role === "user" || x?.role === "assistant") && typeof x?.content === "string" && x.content.trim())
+            .slice(-40)
+            .map((x) => ({ role: x.role, content: x.content.trim() }))
+        : [];
+      const recentHistory = historyRaw.slice(-10);
+      const oldHistorySummary = this.compressHistory(historyRaw.slice(0, -10));
+      const userPrompt = oldHistorySummary
+        ? `【较早历史摘要】\n${oldHistorySummary}\n\n【当前问题】\n${body.question}`
+        : body.question;
       for await (const chunk of this.llm.streamChatCompletion({
         system,
-        user: body.question,
+        user: userPrompt,
+        history: recentHistory,
         model
       })) {
         res.write(`data: ${JSON.stringify(chunk)}\n\n`);
@@ -129,5 +141,14 @@ export class AiController {
       res.write(`data: ${JSON.stringify({ event: "error", message: msg })}\n\n`);
     }
     res.end();
+  }
+
+  private compressHistory(history: Array<{ role: "user" | "assistant"; content: string }>): string {
+    if (!history.length) return "";
+    const lines = history
+      .slice(-20)
+      .map((x) => `${x.role === "user" ? "用户" : "助手"}：${x.content.replace(/\s+/g, " ").slice(0, 80)}`);
+    const joined = lines.join("；");
+    return joined.length > 1200 ? `${joined.slice(0, 1200)}...` : joined;
   }
 }

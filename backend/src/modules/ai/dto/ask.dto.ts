@@ -1,5 +1,15 @@
 import { Type } from "class-transformer";
-import { IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from "class-validator";
+import { IsArray, IsBoolean, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from "class-validator";
+
+class ChatHistoryItemDto {
+  @IsIn(["user", "assistant"])
+  role!: "user" | "assistant";
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(4096)
+  content!: string;
+}
 
 export class AskDto {
   @IsString()
@@ -32,5 +42,12 @@ export class AskDto {
   @Min(1)
   @Max(100)
   pageSize?: number;
+
+  /** 近几轮上下文（按时间正序），不含当前 question */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ChatHistoryItemDto)
+  history?: ChatHistoryItemDto[];
 }
 

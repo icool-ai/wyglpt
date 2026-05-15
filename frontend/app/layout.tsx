@@ -1,6 +1,7 @@
 import { AntdRegistry } from '@ant-design/nextjs-registry'
 import 'antd/dist/reset.css'
 import './styles.css'
+import type { Metadata } from 'next'
 import type { ReactNode } from 'react'
 import { Plus_Jakarta_Sans } from 'next/font/google'
 import { Providers } from './providers'
@@ -11,6 +12,10 @@ const plusJakarta = Plus_Jakarta_Sans({
   variable: '--font-sans',
   display: 'swap',
 })
+
+export const metadata: Metadata = {
+  title: '物业管理平台',
+}
 
 /** AntdRegistry 紧贴 body，SSR 注入 css-in-js；hashPriority 减轻与 Tailwind 混用时的覆盖问题 */
 export default function RootLayout({ children }: { children: ReactNode }) {
